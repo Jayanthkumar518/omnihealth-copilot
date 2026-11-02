@@ -1,229 +1,323 @@
 'use client';
-import { useState } from 'react';
-import { Mic, StopCircle, FileText, Download, Sparkles, AlertTriangle, ShieldCheck, Activity, BookOpen, CheckCircle2 } from 'lucide-react';
+import { useState, useRef } from 'react';
+import { Heart, Mic, MicOff, Volume2, ShieldCheck, Activity, Smile, Send, ClipboardList, CheckCircle2, AlertCircle, Download, Wind, Sparkles, FileText, UserCheck } from 'lucide-react';
 
-export default function VoiceTriage() {
+export default function CaretakerAgent() {
+  const [isSessionActive, setIsSessionActive] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [userInput, setUserInput] = useState('');
+  const [history, setHistory] = useState([]);
+  const [caretakerData, setCaretakerData] = useState(null);
   const [isRecording, setIsRecording] = useState(false);
-  const [transcript, setTranscript] = useState('');
-  const [dossier, setDossier] = useState(null);
-  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [showBreathing, setShowBreathing] = useState(false);
+  const recognitionRef = useRef(null);
 
-  const startRecording = () => {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      alert('Speech recognition is not supported in this browser. Please use Google Chrome.');
+  const toggleSession = () => {
+    const newState = !isSessionActive;
+    setIsSessionActive(newState);
+    if (newState) {
+      speakText("Hello! I am your clinical intake assistant. Speak continuously or type your symptoms. I will listen as long as you need, and you can submit when finished.");
+    } else {
+      setCaretakerData(null);
+      setHistory([]);
+      stopMicrophone();
+    }
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    const text = userInput.trim();
+    if (!text || !isSessionActive) return;
+    
+    // Stop recording if active before submitting
+    if (isRecording) {
+      stopMicrophone();
+    }
+
+    setUserInput('');
+    await processPatientInput(text);
+  };
+
+  const processPatientInput = async (text) => {
+    setIsProcessing(true);
+    const updatedHistory = [...history, { sender: 'patient', text }];
+
+    try {
+      const response = await fetch('http://127.0.0.1:8000/api/caregiver-agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ transcript: text, history }),
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        setHistory(updatedHistory);
+        setCaretakerData(data.caregiverResponse);
+        speakText(data.caregiverResponse.emotionalComfort);
+      }
+    } catch (err) {
+      alert('Could not connect to FastAPI backend on port 8000.');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const toggleMicrophone = () => {
+    if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
+      alert("Speech recognition not supported in this browser. Please type your message below.");
       return;
     }
 
-    const recognition = new SpeechRecognition();
-    recognition.lang = 'en-US';
-    recognition.interimResults = false;
-    recognition.maxAlternatives = 1;
+    if (isRecording) {
+      stopMicrophone();
+    } else {
+      startMicrophone();
+    }
+  };
 
-    recognition.onstart = () => setIsRecording(true);
+  const startMicrophone = () => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const recognition = new SpeechRecognition();
+    recognition.continuous = true; // Keeps listening even if you pause
+    recognition.interimResults = true; // Shows words as you speak
+    recognition.lang = 'en-US';
+
+    recognition.onstart = () => {
+      setIsRecording(true);
+    };
+
     recognition.onresult = (event) => {
-      const speechToText = event.results[0][0].transcript;
-      setTranscript(speechToText);
-      runClinicalDecisionSupport(speechToText);
+      let interimTranscript = '';
+      let finalTranscript = '';
+
+      for (let i = event.resultIndex; i < event.results.length; ++i) {
+        if (event.results[i].isFinal) {
+          finalTranscript += event.results[i][0].transcript;
+        } else {
+          interimTranscript += event.results[i][0].transcript;
+        }
+      }
+
+      if (finalTranscript) {
+        setUserInput(prev => (prev ? prev + ' ' + finalTranscript : finalTranscript));
+      }
+    };
+
+    recognition.onerror = (event) => {
+      console.error('Speech recognition error', event.error);
       setIsRecording(false);
     };
-    recognition.onerror = () => setIsRecording(false);
-    recognition.onend = () => setIsRecording(false);
 
+    recognition.onend = () => {
+      setIsRecording(false);
+    };
+
+    recognitionRef.current = recognition;
     recognition.start();
   };
 
-  // Advanced Clinical Decision Support & OPQRST Engine
-  const runClinicalDecisionSupport = (text) => {
-    const lower = text.toLowerCase();
-    
-    let specialty = 'General Ambulatory Care';
-    let esiLevel = 'Level 4/5: Semi-Urgent / Routine';
-    let badgeColor = 'bg-cyan-500/10 text-cyan-400 border-cyan-500/30';
-    let guidelineSource = 'Agency for Healthcare Research and Quality (AHRQ) Primary Care Standards';
-    let opqrstAnalysis = {
-      onset: lower.includes('day') || lower.includes('hour') || lower.includes('yesterday') ? 'Captured in narrative' : 'Needs clarification: Exact symptom onset timestamp missing',
-      provocation: lower.includes('when') || lower.includes('after') || lower.includes('moving') ? 'Identified potential trigger' : 'Needs clarification: Specific aggravating/relieving factors',
-      quality: 'Described in patient subjective report',
-      radiation: 'Needs clarification: Does sensation radiate or remain localized?',
-      severity: 'Needs clarification: Quantify discomfort on a 1-to-10 scale',
-      time: 'Needs clarification: Constant vs. intermittent pattern'
-    };
-    let empathyText = `I hear you describing "${text}". Organizing your symptoms through structured medical protocols ensures your clinical team has an accurate history. Take a deep breath; you're taking a great step forward.`;
-
-    if (lower.includes('chest') || lower.includes('breath') || lower.includes('heart') || lower.includes('crushing')) {
-      specialty = 'Cardiovascular & Thoracic Triage';
-      esiLevel = 'Level 1: IMMEDIATE EMERGENCY EVALUATION';
-      badgeColor = 'bg-red-500/10 text-red-400 border-red-500/30';
-      guidelineSource = 'AHA/ACC 2021 Guidelines for Acute Coronary Evaluation & Emergency Department Triage';
-      empathyText = `You mentioned thoracic or breathing symptoms. Per emergency cardiac guidelines, please consider seeking immediate medical evaluation. Your safety is our absolute priority.`;
-    } else if (lower.includes('headache') || lower.includes('dizzy') || lower.includes('numb') || lower.includes('vision') || lower.includes('weak')) {
-      specialty = 'Neurological & Cranial Screening';
-      esiLevel = 'Level 2: URGENT MEDICAL EVALUATION';
-      badgeColor = 'bg-yellow-500/10 text-yellow-400 border-yellow-500/30';
-      guidelineSource = 'American Academy of Neurology (AAN) Acute Triage & Headache Consensus Parameters';
-      empathyText = `Neurological symptoms can be exceptionally fatiguing. Documenting the exact progression and visual or sensory qualities will assist your neurologist immensely.`;
-    } else if (lower.includes('stomach') || lower.includes('belly') || lower.includes('pain') || lower.includes('nausea') || lower.includes('gut')) {
-      specialty = 'Gastrointestinal & Abdominal Assessment';
-      esiLevel = 'Level 3: Urgent Ambulatory Evaluation';
-      badgeColor = 'bg-cyan-500/10 text-cyan-400 border-cyan-500/30';
-      guidelineSource = 'World Gastroenterology Organisation (WGO) Global Clinical Guidelines';
-      empathyText = `Abdominal discomfort impacts daily well-being significantly. Tracking exact food or activity triggers will help your physician isolate the root cause quickly.`;
+  const stopMicrophone = () => {
+    if (recognitionRef.current) {
+      recognitionRef.current.stop();
+      recognitionRef.current = null;
     }
-
-    const report = {
-      rawText: text,
-      specialty,
-      esiLevel,
-      badgeColor,
-      guidelineSource,
-      timestamp: new Date().toLocaleString(),
-      isbar: {
-        situation: text,
-        background: `Patient presented subjective health narrative under specialty classification [${specialty}].`,
-        assessment: `Triage risk stratification executed against validated clinical criteria. Status: ${esiLevel}`,
-        recommendation: 'Physician review utilizing OPQRST history-taking and targeted differential screening.'
-      },
-      opqrstAnalysis,
-      empathyText
-    };
-
-    setDossier(report);
-    speakAuditoryGuidance(report.empathyText);
+    setIsRecording(false);
   };
 
-  const speakAuditoryGuidance = (text) => {
+  const speakText = (text) => {
     if ('speechSynthesis' in window) {
       window.speechSynthesis.cancel();
       const utterance = new SpeechSynthesisUtterance(text);
-      utterance.rate = 0.95;
-      utterance.onstart = () => setIsSpeaking(true);
-      utterance.onend = () => setIsSpeaking(false);
+      utterance.rate = 0.93;
       window.speechSynthesis.speak(utterance);
     }
   };
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div>
-          <h2 className="text-xl font-bold flex items-center gap-2">
-            <Activity className="w-6 h-6 text-cyan-400" /> Evidence-Based Clinical Voice Triage
+    <div className="space-y-6 max-w-5xl mx-auto">
+      {/* Healing Green Banner */}
+      <div className="p-8 rounded-3xl bg-gradient-to-r from-slate-900 via-slate-900 to-emerald-950/40 border border-emerald-900/50 shadow-2xl flex flex-col md:flex-row justify-between gap-6 relative overflow-hidden">
+        <div className="absolute top-0 right-0 -mt-4 -mr-4 w-32 h-32 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none"></div>
+        <div className="space-y-2 z-10">
+          <span className="px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 font-bold text-[10px] uppercase flex items-center gap-1.5 w-max">
+            <Sparkles className="w-3 h-3 text-emerald-400" /> Module 1: Continuous Voice & Memory Intake
+          </span>
+          <h2 className="text-2xl font-extrabold text-slate-100 flex items-center gap-2.5">
+            <Smile className="w-7 h-7 text-emerald-400" /> OmniHealth Clinical Report Generator
           </h2>
-          <p className="text-sm text-slate-400">Transforms patient voice narratives into publication-grade ISBAR dossiers backed by peer-reviewed triage frameworks.</p>
+          <p className="text-xs text-slate-400 max-w-lg leading-relaxed">
+            Speak continuously without interruptions. The microphone stays active as you pause to think. Click "Audit & Verify" when you are finished to run the RAG verification.
+          </p>
         </div>
-        <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-800 text-xs text-cyan-400">
-          <ShieldCheck className="w-4 h-4" /> OPQRST & ISBAR Validated Engine
-        </div>
-      </div>
 
-      {/* Voice Input Card */}
-      <div className="flex flex-col items-center justify-center p-12 rounded-3xl bg-slate-900/60 border border-slate-800 text-center space-y-4 shadow-xl">
-        <button
-          onClick={startRecording}
-          disabled={isRecording}
-          className={`p-7 rounded-full transition-all cursor-pointer shadow-xl ${
-            isRecording 
-              ? 'bg-red-500 animate-pulse text-white shadow-red-500/50 scale-110' 
-              : 'bg-cyan-500 text-slate-950 hover:scale-105 shadow-cyan-500/30'
-          }`}
-        >
-          {isRecording ? <StopCircle className="w-12 h-12" /> : <Mic className="w-12 h-12" />}
-        </button>
-        <div>
-          <p className="text-sm font-bold text-slate-200">{isRecording ? 'Analyzing Clinical Markers & OPQRST...' : 'Tap to Record Clinical Voice Input'}</p>
-          <p className="text-xs text-slate-500 mt-1">Speak naturally about your symptoms, duration, and intensity.</p>
+        <div className="flex items-center gap-3 shrink-0 z-10">
+          <button
+            onClick={() => { setShowBreathing(true); speakText("Let's take a calming breath together. Inhale slowly for 4 seconds, hold for 7, and exhale completely for 8."); }}
+            className="px-4 py-3.5 rounded-2xl bg-slate-800 hover:bg-slate-700 text-emerald-300 font-bold text-xs flex items-center gap-1.5 border border-emerald-900/50 cursor-pointer shadow-md transition-all"
+          >
+            <Wind className="w-4 h-4 text-emerald-400" /> Calming Exercise
+          </button>
+          <button
+            onClick={toggleSession}
+            className={`px-6 py-3.5 rounded-2xl font-bold text-xs transition-all cursor-pointer flex items-center gap-2 ${
+              isSessionActive ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' : 'bg-emerald-500 text-slate-950 hover:bg-emerald-400 shadow-lg shadow-emerald-500/20'
+            }`}
+          >
+            {isSessionActive ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+            {isSessionActive ? 'Pause Session' : 'Start Intake Session'}
+          </button>
         </div>
       </div>
 
-      {/* Clinical Dossier Output */}
-      {dossier && (
-        <div className="space-y-6 animate-fadeIn">
-          {/* Empathetic Audio Banner */}
-          <div className="p-5 rounded-2xl bg-cyan-500/10 border border-cyan-500/30 flex items-start gap-4">
-            <div className="p-2 bg-cyan-500/20 text-cyan-400 rounded-xl mt-0.5">
-              <Sparkles className="w-6 h-6 animate-pulse" />
-            </div>
-            <div className="flex-1 space-y-1">
-              <div className="flex items-center justify-between">
-                <h4 className="font-bold text-cyan-300 text-sm">Empathetic Patient Guidance & Reassurance</h4>
-                {isSpeaking && <span className="text-xs text-cyan-400 animate-pulse">🔊 Speaking audio guidance...</span>}
-              </div>
-              <p className="text-sm text-slate-200">{dossier.empathyText}</p>
-            </div>
+      {showBreathing && (
+        <div className="p-6 rounded-3xl bg-emerald-500/10 border border-emerald-500/30 text-center space-y-3 animate-fadeIn">
+          <div className="flex justify-between items-center">
+            <h3 className="text-sm font-bold text-emerald-300 flex items-center gap-2">
+              <Wind className="w-4 h-4 text-emerald-400 animate-spin" /> Guided 4-7-8 Breathing Pacing (Anxiety & Pain Relief)
+            </h3>
+            <button onClick={() => setShowBreathing(false)} className="text-xs text-slate-400 hover:text-white cursor-pointer">Close X</button>
           </div>
-
-          {/* Structured Dossier */}
-          <div className="p-6 md:p-8 rounded-3xl bg-slate-900 border border-slate-800 space-y-6 shadow-2xl">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-800 pb-5">
-              <div>
-                <span className={`text-xs font-bold px-3 py-1 rounded-full border ${dossier.badgeColor}`}>
-                  {dossier.esiLevel}
-                </span>
-                <h3 className="font-bold text-lg text-slate-100 flex items-center gap-2 mt-3">
-                  <FileText className="w-5 h-5 text-cyan-400" /> ISBAR Clinical Handoff Dossier ({dossier.specialty})
-                </h3>
-                <p className="text-xs text-slate-400">Generated at {dossier.timestamp}</p>
-              </div>
-              <button
-                onClick={() => window.print()}
-                className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-cyan-500 text-slate-950 text-xs font-bold hover:bg-cyan-400 transition-all cursor-pointer shadow-lg"
-              >
-                <Download className="w-4 h-4" /> Export Clinical PDF
-              </button>
-            </div>
-
-            {/* Scientific Guideline Citation */}
-            <div className="p-3.5 rounded-2xl bg-slate-950 border border-slate-800 flex items-center gap-3 text-xs text-slate-300">
-              <BookOpen className="w-4 h-4 text-cyan-400 shrink-0" />
-              <div>
-                <strong className="text-cyan-400">Trusted Clinical Guideline Reference:</strong> {dossier.guidelineSource}
-              </div>
-            </div>
-
-            {/* ISBAR Grid */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-2">
-                <span className="text-xs font-bold text-cyan-400 uppercase tracking-wider">Situation (Subjective Narrative)</span>
-                <p className="text-sm text-slate-300 italic">"{dossier.isbar.situation}"</p>
-              </div>
-              <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-2">
-                <span className="text-xs font-bold text-cyan-400 uppercase tracking-wider">Background & Specialty</span>
-                <p className="text-sm text-slate-300">{dossier.isbar.background}</p>
-              </div>
-              <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-2">
-                <span className="text-xs font-bold text-yellow-400 uppercase tracking-wider">Clinical Assessment & Triage</span>
-                <p className="text-sm text-slate-300 font-medium">{dossier.isbar.assessment}</p>
-              </div>
-              <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-2">
-                <span className="text-xs font-bold text-cyan-400 uppercase tracking-wider">Physician Recommendation</span>
-                <p className="text-sm text-slate-300">{dossier.isbar.recommendation}</p>
-              </div>
-            </div>
-
-            {/* OPQRST Diagnostic Gap Analysis */}
-            <div className="p-5 rounded-2xl bg-slate-950 border border-slate-800 space-y-3">
-              <h4 className="text-xs font-bold text-yellow-400 uppercase tracking-wider flex items-center gap-2">
-                <AlertTriangle className="w-4 h-4" /> OPQRST Diagnostic Gap Analysis (To Discuss with Your Doctor)
-              </h4>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                {Object.entries(dossier.opqrstAnalysis).map(([key, value], idx) => (
-                  <div key={idx} className="flex items-start gap-2.5 text-xs text-slate-300 bg-slate-900 p-3.5 rounded-xl border border-slate-800">
-                    <CheckCircle2 className="w-4 h-4 text-cyan-400 shrink-0 mt-0.5" />
-                    <div>
-                      <strong className="uppercase text-cyan-300">{key}:</strong> {value}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="p-3 text-[11px] text-slate-500 text-center">
-              Clinical Decision Support Prototype. Designed to assist patient-physician communication and documentation.
-            </div>
-          </div>
+          <p className="text-xs text-slate-300 max-w-md mx-auto">
+            Inhale slowly through your nose for 4 seconds... Hold gently for 7 seconds... Exhale completely through your mouth for 8 seconds.
+          </p>
         </div>
       )}
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        {/* Left: Continuous Voice & Text Console */}
+        <div className="p-6 rounded-3xl bg-slate-900 border border-slate-800 space-y-4 shadow-xl flex flex-col justify-between">
+          <div className="space-y-4">
+            <div className="flex justify-between items-center">
+              <h3 className="font-bold text-slate-100 text-sm flex items-center gap-2">
+                <Activity className="w-4 h-4 text-emerald-400" /> Continuous Voice Dictation Console
+              </h3>
+              {isRecording && (
+                <span className="px-2.5 py-1 rounded-full bg-red-500/20 text-red-400 border border-red-500/30 text-[10px] font-bold animate-pulse flex items-center gap-1">
+                  🔴 Listening Continuously...
+                </span>
+              )}
+            </div>
+
+            <form onSubmit={handleSubmit} className="space-y-3">
+              <textarea
+                rows={5}
+                disabled={!isSessionActive}
+                placeholder="Speak freely or type your symptoms. The microphone will stay on as you pause... Click Audit & Verify when done."
+                value={userInput}
+                onChange={(e) => setUserInput(e.target.value)}
+                className="w-full p-3.5 rounded-2xl bg-slate-950 border border-slate-800 text-xs text-slate-100 focus:border-emerald-500 focus:outline-none resize-none disabled:opacity-40"
+              />
+              <div className="flex gap-2">
+                <button
+                  type="submit"
+                  disabled={!isSessionActive || !userInput.trim() || isProcessing}
+                  className="flex-1 py-3 rounded-xl bg-emerald-500 text-slate-950 font-bold hover:bg-emerald-400 transition-all cursor-pointer disabled:opacity-40 flex items-center justify-center gap-1.5 text-xs shadow-md shadow-emerald-500/10"
+                >
+                  <Send className="w-3.5 h-3.5" /> Audit & Verify Report
+                </button>
+                <button
+                  type="button"
+                  disabled={!isSessionActive}
+                  onClick={toggleMicrophone}
+                  className={`px-4 py-3 rounded-xl font-bold text-xs border transition-all cursor-pointer flex items-center gap-1.5 disabled:opacity-40 ${
+                    isRecording ? 'bg-red-500 text-white border-red-400 animate-pulse' : 'bg-slate-800 text-emerald-400 border-slate-700 hover:bg-slate-700'
+                  }`}
+                >
+                  <Mic className="w-4 h-4" /> {isRecording ? 'Stop Mic' : 'Start Mic'}
+                </button>
+              </div>
+            </form>
+          </div>
+
+          <div className="p-3 rounded-2xl bg-emerald-950/20 border border-emerald-500/30 text-[11px] text-slate-300">
+            <span className="font-bold text-emerald-400 block mb-0.5">Continuous Listening Active</span>
+            Speak your full story at your own pace. The system waits until you click submit before verifying with the backend.
+          </div>
+        </div>
+
+        {/* Right: Cumulative Auditor & Report */}
+        <div className="p-6 rounded-3xl bg-slate-900 border border-slate-800 space-y-5 shadow-xl flex flex-col justify-between">
+          <div className="space-y-4">
+            <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+              <h3 className="font-semibold text-emerald-400 text-sm flex items-center gap-2">
+                <UserCheck className="w-4 h-4 text-emerald-400" /> Cumulative Doctor Intake Audit
+              </h3>
+              {caretakerData && (
+                <div className="flex items-center gap-2">
+                  <button onClick={() => window.print()} className="px-3 py-1 bg-emerald-500 hover:bg-emerald-400 text-slate-950 rounded-xl font-bold text-[11px] flex items-center gap-1 cursor-pointer transition-all">
+                    <Download className="w-3.5 h-3.5" /> Export PDF
+                  </button>
+                  <button onClick={() => speakText(caretakerData.emotionalComfort)} className="text-emerald-400 hover:text-emerald-300 cursor-pointer">
+                    <Volume2 className="w-4 h-4" />
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {caretakerData ? (
+              <div className="space-y-4 text-xs animate-fadeIn max-h-[380px] overflow-y-auto pr-1">
+                <div className="p-3.5 rounded-2xl bg-emerald-950/20 border border-emerald-500/30 space-y-1">
+                  <strong className="text-emerald-400 uppercase text-[10px] flex items-center gap-1">
+                    <Sparkles className="w-3.5 h-3.5" /> Caretaker Validation:
+                  </strong>
+                  <p className="text-slate-200 leading-relaxed">{caretakerData.emotionalComfort}</p>
+                </div>
+
+                <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-3">
+                  <strong className="text-cyan-400 uppercase text-xs tracking-wide flex items-center gap-1.5">
+                    <ClipboardList className="w-4 h-4 text-cyan-400" /> Doctor Intake Checklist (Verified):
+                  </strong>
+                  <div className="space-y-2">
+                    {caretakerData.doctorIntakeAudit?.map((item, i) => (
+                      <div
+                        key={i}
+                        className={`p-3.5 rounded-xl border flex items-start gap-3 transition-all ${
+                          item.mentioned
+                            ? 'bg-emerald-950/30 border-emerald-500/50 text-emerald-300 shadow-sm'
+                            : 'bg-amber-950/20 border-amber-500/50 text-amber-200 shadow-lg'
+                        }`}
+                      >
+                        {item.mentioned ? (
+                          <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
+                        ) : (
+                          <AlertCircle className="w-6 h-6 text-amber-400 shrink-0 mt-0.5 animate-pulse" />
+                        )}
+                        <div className="flex-1">
+                          <span className={item.mentioned ? 'text-xs font-semibold' : 'text-sm font-extrabold text-amber-300 block'}>
+                            {item.title}
+                          </span>
+                          <span className="block text-[11px] mt-0.5 opacity-90">
+                            {item.mentioned ? '✅ Verified in narrative' : '⚠️ Still Needed — Tell your assistant about this!'}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="p-3.5 rounded-2xl bg-slate-950 border border-slate-800 space-y-1">
+                  <strong className="text-emerald-400 uppercase text-[10px]">Suggested Clinical Focus:</strong>
+                  <p className="text-slate-300 font-mono text-[11px] leading-relaxed">
+                    {caretakerData.suggestedClinicalPlan || "Perform physical examination and evaluate reported symptoms."}
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <div className="text-center py-20 space-y-2">
+                <div className="w-10 h-10 rounded-full bg-slate-800/50 flex items-center justify-center mx-auto text-slate-500">
+                  <FileText className="w-5 h-5 text-emerald-400" />
+                </div>
+                <p className="text-xs text-slate-500">Click Start Mic, speak your complete symptom narrative at your own pace, and click "Audit & Verify Report" when finished.</p>
+              </div>
+            )}
+          </div>
+
+          <div className="p-3 rounded-2xl bg-slate-950 border border-slate-800 text-[11px] text-slate-400 flex items-center justify-between">
+            <span>Microphone Status: {isRecording ? '🟢 Listening (Continuous)' : '⚪ Ready'}</span>
+            <span className="text-emerald-400 font-semibold">Zero Hardcoding</span>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

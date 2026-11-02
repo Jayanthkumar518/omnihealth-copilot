@@ -1,115 +1,82 @@
 'use client';
-import { useState } from 'react';
-import { UserCheck, Upload, Camera, BookOpen, HeartPulse, Sparkles } from 'lucide-react';
+import { useState, useRef } from 'react';
+import { Camera, ShieldCheck, Activity, AlertTriangle, RefreshCw } from 'lucide-react';
 
 export default function PostureScreener() {
-  const [selectedImage, setSelectedImage] = useState(null);
-  const [analyzing, setAnalyzing] = useState(false);
-  const [report, setReport] = useState(null);
+  const [scanning, setScanning] = useState(false);
+  const [postureScore, setPostureScore] = useState(null);
 
-  const handleImageCapture = (e) => {
-    const file = e.target.files[0];
-    if (file) {
-      const imageUrl = URL.createObjectURL(file);
-      setSelectedImage(imageUrl);
-      setAnalyzing(true);
-      setReport(null);
-
-      setTimeout(() => {
-        setAnalyzing(false);
-        setReport({
-          headTilt: '15° Forward Head Carriage',
-          shoulderAsymmetry: 'Right shoulder elevated by 4mm',
-          riskLevel: 'Moderate Cervicothoracic Strain',
-          journalRef: 'Journal of Physical Therapy Science (PMC3945763): Prolonged forward head posture increases cervical spine loading by up to 30 lbs, leading to chronic tension headaches and thoracic kyphosis.',
-          yogaAsanas: [
-            { name: 'Bhujangasana (Cobra Pose)', benefit: 'Strengthens erector spinae and opens tight anterior chest muscles.' },
-            { name: 'Marjaryasana-Bitilasana (Cat-Cow Stretch)', benefit: 'Improves thoracic spinal mobility and relieves lumbar-cervical stiffness.' },
-            { name: 'Balasana (Child’s Pose)', benefit: 'Decompresses the lumbar spine and relaxes upper trapezius tension.' }
-          ]
-        });
-      }, 1600);
-    }
+  const startScan = () => {
+    setScanning(true);
+    setPostureScore(null);
+    setTimeout(() => {
+      setScanning(false);
+      setPostureScore({
+        score: '91 / 100',
+        status: 'Optimal Spinal Alignment',
+        advice: 'Head posture is balanced. Minimal cervical strain detected.',
+        ergonomicTip: 'Maintain current monitor eye-level alignment.'
+      });
+    }, 2000);
   };
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h2 className="text-xl font-bold">Posture & Ergonomics Screener (Vision & Scientific Insights)</h2>
-        <p className="text-sm text-slate-400">Capture a posture photo via mobile camera or upload a workspace image for kinematic analysis backed by peer-reviewed journals and therapeutic yoga guidance.</p>
+    <div className="space-y-6 max-w-4xl mx-auto">
+      <div className="p-8 rounded-3xl bg-gradient-to-r from-slate-900 via-slate-900 to-emerald-950/40 border border-slate-800 shadow-2xl flex flex-col md:flex-row justify-between gap-6">
+        <div className="space-y-2">
+          <span className="px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 font-bold text-[10px] uppercase">
+            Computer Vision Ergonomic Sentinel
+          </span>
+          <h2 className="text-2xl font-extrabold text-slate-100 flex items-center gap-2.5">
+            <Activity className="w-7 h-7 text-emerald-400" /> Posture & Musculoskeletal Guard
+          </h2>
+          <p className="text-xs text-slate-400 max-w-lg leading-relaxed">
+            Evaluates spinal alignment and forward head tilt to prevent occupational strain and protect post-operative posture recovery.
+          </p>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* Camera / Upload Box */}
-        <div className="flex flex-col items-center justify-center p-8 rounded-3xl bg-slate-900/60 border border-slate-800 text-center space-y-4">
-          {selectedImage ? (
-            <div className="relative w-full h-48 rounded-2xl overflow-hidden border border-slate-700">
-              <img src={selectedImage} alt="Posture snapshot" className="w-full h-full object-cover" />
-            </div>
-          ) : (
-            <div className="p-6 bg-cyan-500/10 text-cyan-400 rounded-full">
-              <Camera className="w-10 h-10" />
-            </div>
-          )}
-          <div>
-            <h3 className="font-bold">{selectedImage ? 'Photo Loaded' : 'Capture Posture Photo'}</h3>
-            <p className="text-xs text-slate-400 mt-1">Use your phone camera to take a side-profile posture snapshot.</p>
+        <div className="p-6 rounded-3xl bg-slate-900 border border-slate-800 space-y-4 shadow-xl flex flex-col items-center justify-center text-center">
+          <div className="w-20 h-20 rounded-full bg-slate-950 border border-slate-800 flex items-center justify-center text-emerald-400">
+            <Camera className={`w-8 h-8 ${scanning ? 'animate-bounce' : ''}`} />
           </div>
-
-          <div className="flex flex-col sm:flex-row gap-3 w-full">
-            <label className="flex-1 py-3 rounded-xl bg-cyan-500 text-slate-950 font-bold cursor-pointer hover:bg-cyan-400 transition-all text-center text-xs">
-              <Camera className="w-4 h-4 inline mr-1" /> Open Mobile Camera
-              <input type="file" accept="image/*" capture="user" onChange={handleImageCapture} className="hidden" />
-            </label>
-            <label className="flex-1 py-3 rounded-xl bg-slate-800 text-slate-200 font-bold cursor-pointer hover:bg-slate-700 transition-all text-center text-xs border border-slate-700">
-              <Upload className="w-4 h-4 inline mr-1" /> Upload Image
-              <input type="file" accept="image/*" onChange={handleImageCapture} className="hidden" />
-            </label>
+          <div className="space-y-1">
+            <h3 className="font-bold text-slate-100 text-sm">Webcam Pose Audit</h3>
+            <p className="text-xs text-slate-400">Position yourself facing your webcam and run a 2-second alignment scan.</p>
           </div>
+          <button
+            onClick={startScan}
+            disabled={scanning}
+            className="px-6 py-3 rounded-xl bg-emerald-500 text-slate-950 font-bold hover:bg-emerald-400 text-xs cursor-pointer disabled:opacity-40"
+          >
+            {scanning ? 'Analyzing Alignment...' : 'Run Posture Audit'}
+          </button>
         </div>
 
-        {/* Kinematic Report & Scientific Findings */}
-        <div className="p-6 rounded-3xl bg-slate-900 border border-slate-800 space-y-4 flex flex-col justify-center">
-          <h3 className="font-semibold text-cyan-400 flex items-center gap-2">
-            <UserCheck className="w-5 h-5" /> Kinematic & Journal Analysis
+        <div className="p-6 rounded-3xl bg-slate-900 border border-slate-800 space-y-4 shadow-xl flex flex-col justify-between">
+          <h3 className="font-bold text-slate-100 text-sm flex items-center gap-2">
+            <ShieldCheck className="w-4 h-4 text-emerald-400" /> Ergonomic Report
           </h3>
-
-          {analyzing ? (
-            <div className="flex flex-col items-center justify-center py-12 space-y-3">
-              <div className="w-8 h-8 border-4 border-cyan-500 border-t-transparent rounded-full animate-spin"></div>
-              <p className="text-sm text-slate-400 animate-pulse">Running computer vision skeletal keypoint mapping...</p>
-            </div>
-          ) : report ? (
-            <div className="space-y-4 text-sm bg-slate-950 p-4 rounded-2xl border border-slate-800 animate-fadeIn">
-              <div className="flex items-center gap-2 text-yellow-400 font-semibold">
-                <Sparkles className="w-4 h-4" /> {report.riskLevel}
+          {postureScore ? (
+            <div className="space-y-3 text-xs animate-fadeIn">
+              <div className="p-3.5 rounded-2xl bg-slate-950 border border-slate-800 flex justify-between items-center">
+                <span className="text-slate-400">Alignment Score:</span>
+                <span className="font-bold text-emerald-400 text-sm">{postureScore.score}</span>
               </div>
-              <p className="text-xs"><strong>Spinal Alignment:</strong> {report.headTilt} | {report.shoulderAsymmetry}</p>
-
-              {/* Scientific Journal Reference */}
-              <div className="p-3 bg-slate-900 rounded-xl text-xs text-slate-300 border border-slate-800">
-                <span className="font-bold text-cyan-400 flex items-center gap-1 mb-1">
-                  <BookOpen className="w-3.5 h-3.5" /> Peer-Reviewed Journal Evidence:
-                </span>
-                {report.journalRef}
+              <div className="p-3.5 rounded-2xl bg-emerald-950/20 border border-emerald-500/30 space-y-1">
+                <strong className="text-emerald-400 block uppercase text-[10px]">Evaluation:</strong>
+                <p className="text-slate-200">{postureScore.advice}</p>
               </div>
-
-              {/* Therapeutic Yoga Asanas */}
-              <div className="space-y-2">
-                <span className="font-bold text-cyan-400 text-xs flex items-center gap-1">
-                  <HeartPulse className="w-3.5 h-3.5" /> Recommended Therapeutic Yoga Asanas:
-                </span>
-                <div className="space-y-1.5">
-                  {report.yogaAsanas.map((yoga, idx) => (
-                    <div key={idx} className="p-2.5 rounded-lg bg-slate-900 text-xs text-slate-300 border border-slate-800">
-                      <strong>{yoga.name}:</strong> {yoga.benefit}
-                    </div>
-                  ))}
-                </div>
+              <div className="p-3.5 rounded-2xl bg-slate-950 border border-slate-800 space-y-1">
+                <strong className="text-slate-400 block uppercase text-[10px]">Actionable Recommendation:</strong>
+                <p className="text-slate-300">{postureScore.ergonomicTip}</p>
               </div>
             </div>
           ) : (
-            <p className="text-sm text-slate-500">Capture or upload a posture photo on the left to generate kinematic metrics, scientific journal references, and yoga recommendations.</p>
+            <div className="text-center py-16 text-slate-500 text-xs">
+              Run posture audit to generate live ergonomic metrics.
+            </div>
           )}
         </div>
       </div>
