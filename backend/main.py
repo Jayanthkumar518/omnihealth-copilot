@@ -1,17 +1,31 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Body
-from fastapi.middleware.cors import CORSMiddleware
-import pytesseract
-from PIL import Image
+import os
 import io
 import re
-import requests
-import os
 import json
+import pickle
+import sqlite3
+import requests
 import httpx
+import numpy as np
+import pytesseract
+from PIL import Image
+from typing import List, Optional
+from fastapi import FastAPI, UploadFile, File, HTTPException, Body
+from fastapi.middleware.cors import CORSMiddleware
 
-pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+try:
+    import cv2
+except ImportError:
+    cv2 = None
 
-app = FastAPI(title="OmniHealth Enterprise RAG Master Backend", version="35.0")
+from voice_rag_engine import build_grouped_clinical_report
+
+# Configure Windows Tesseract OCR executable path if present
+if os.path.exists(r"C:\Program Files\Tesseract-OCR\tesseract.exe"):
+    pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+
+# 1. Initialize FastAPI App FIRST
+app = FastAPI(title="OmniHealth Unified Enterprise Backend", version="40.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -22,262 +36,230 @@ app.add_middleware(
 )
 
 OPENFDA_API_URL = "https://api.fda.gov/drug/label.json"
+DB_FILE = os.path.join(os.path.dirname(__file__), "omnihealth_prescriptions.db")
+MODEL_CACHE_FILE = os.path.join(os.path.dirname(__file__), "prescription_learning_cache.pkl")
+
+
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS learned_prescriptions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            raw_keyword TEXT UNIQUE,
+            drug_name TEXT,
+            dosage TEXT,
+            frequency TEXT,
+            purpose TEXT,
+            warnings TEXT,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+
+init_db()
+
+
+def load_pkl_model() -> dict:
+    if os.path.exists(MODEL_CACHE_FILE):
+        try:
+            with open(MODEL_CACHE_FILE, "rb") as f:
+                return pickle.load(f)
+        except Exception:
+            return {}
+    return {}
+
+
+def save_pkl_model(cache: dict):
+    try:
+        with open(MODEL_CACHE_FILE, "wb") as f:
+            pickle.dump(cache, f)
+    except Exception:
+        pass
+
+
+@app.get("/")
+def health_check():
+    return {"status": "OmniHealth Unified Clinical Backend Active", "port": 8000}
+
 
 # =====================================================================
-# MODULE 1: Caretaker & Cumulative Memory Intake Auditor with RAG
+# MODULE 1: Voice Triage & Physician HPI Clinical Utility
 # =====================================================================
+from fastapi import Body, HTTPException
+from voice_rag_engine import build_grouped_clinical_report
+
 @app.post("/api/caregiver-agent")
 async def caregiver_agent(payload: dict = Body(...)):
     spoken_text = payload.get("transcript", "").strip()
     previous_history = payload.get("history", [])
-    
-    if not spoken_text:
+    screening_answers = payload.get("screeningAnswers", {})
+    pain_score = payload.get("painScore")
+
+    if not spoken_text and not previous_history and not pain_score:
         raise HTTPException(status_code=400, detail="Patient input is required.")
 
-    full_narrative_context = " ".join([h.get("text", "") for h in previous_history] + [spoken_text])
-    openai_api_key = os.environ.get("OPENAI_API_KEY")
+    full_narrative_context = " . ".join(
+        [h.get("text", "") for h in previous_history if isinstance(h, dict) and h.get("text")]
+        + ([spoken_text] if spoken_text else [])
+    ).strip()
 
-    if openai_api_key:
-        try:
-            headers = {
-                "Authorization": f"Bearer {openai_api_key}",
-                "Content-Type": "application/json"
-            }
-            body = {
-                "model": "gpt-4o-mini",
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": """You are an advanced clinical RAG intelligence agent and empathetic caretaker guardian. Analyze the patient's cumulative narrative and evaluate 5 clinical intake criteria:
-1. "Symptom Onset & Progression Timeline"
-2. "Intensity Score (1-10 Scale)"
-3. "Aggravating & Relieving Factors"
-4. "Associated Autonomic Indicators (Fever, Dizziness, Nausea)"
-5. "Current Medication Adherence & Side-Effect Review"
-
-Return a valid JSON object strictly with keys:
-- "success": true
-- "emotionalComfort": A warm, soothing paragraph acknowledging new details and validating the patient's feelings.
-- "condition": A dynamic clinical category title based on semantic understanding.
-- "urgencyLevel": "Routine Ambulatory Recovery" or "High Priority — Immediate Evaluation Required".
-- "doctorIntakeAudit": An array of 5 objects, each containing:
-  - "title": (string matching one of the 5 criteria above)
-  - "mentioned": (boolean: true if addressed in narrative)
-  - "feedback": (string: brief clinical note)
-- "suggestedClinicalPlan": A concise physician-facing RAG summary note."""
-                    },
-                    {"role": "user", "content": f"Cumulative Patient Narrative: '{full_narrative_context}'"}
-                ],
-                "response_format": { "type": "json_object" }
-            }
-            response = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=body, timeout=8)
-            if response.status_code == 200:
-                parsed_data = json.loads(response.json()["choices"][0]["message"]["content"])
-                return {
-                    "success": True,
-                    "cumulativeNarrative": full_narrative_context,
-                    "caregiverResponse": parsed_data
-                }
-        except Exception:
-            pass
-
-    # Dynamic Fallback
-    lower_full = full_narrative_context.lower()
-    checklist = [
-        {"title": "Symptom Onset & Progression Timeline", "mentioned": any(w in lower_full for w in ["ago", "started", "yesterday", "days", "hours", "since"]), "feedback": "Onset logged."},
-        {"title": "Intensity Score (1-10 Scale)", "mentioned": any(w in lower_full for w in ["scale", "out of", "pain", "severe", "mild", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]), "feedback": "Intensity logged."},
-        {"title": "Aggravating & Relieving Factors", "mentioned": any(w in lower_full for w in ["worse", "better", "when", "relieve", "bending"]), "feedback": "Triggers logged."},
-        {"title": "Associated Autonomic Indicators", "mentioned": any(w in lower_full for w in ["fever", "dizz", "nausea", "chill", "vomit"]), "feedback": "Autonomic signs logged."},
-        {"title": "Current Medication Adherence", "mentioned": any(w in lower_full for w in ["taking", "pill", "dose", "medication", "ibuprofen"]), "feedback": "Medication logged."}
-    ]
+    structured_report = build_grouped_clinical_report(
+        full_narrative=full_narrative_context,
+        screening_answers=screening_answers,
+        pain_score=pain_score,
+    )
 
     return {
         "success": True,
+        "patientSpoken": spoken_text,
         "cumulativeNarrative": full_narrative_context,
-        "caregiverResponse": {
-            "emotionalComfort": "I am integrating your incremental details into your clinical history. How else can I help?",
-            "condition": "Semantic Clinical Assessment",
-            "urgencyLevel": "Routine Ambulatory Recovery",
-            "doctorIntakeAudit": checklist,
-            "suggestedClinicalPlan": "Perform focused clinical examination and evaluate cumulative symptoms."
-        }
+        "caregiverResponse": structured_report,
     }
 
+# =====================================================================
+# MODULE 2: Prescription Scanner & OpenFDA RAG Pipeline
+# =====================================================================
+from typing import Optional
+from fastapi import FastAPI, UploadFile, File, Form, Body, HTTPException
+from prescription_rag_engine import analyze_prescription_slip, register_handwriting_correction
 
-# =====================================================================
-# MODULE 2: Prescription Scanner with Advanced OpenFDA RAG & Semantic Parsing
-# =====================================================================
+
 @app.post("/api/parse-prescription-rag")
-async def parse_prescription_rag(file: UploadFile = File(...)):
+async def parse_prescription_rag(
+    file: Optional[UploadFile] = File(None),
+    manual_text: str = Form(""),
+):
     """
-    Advanced Multimodal Prescription Parser & OpenFDA RAG Engine.
-    Accurately identifies medications from complex prescriptions using semantic AI.
+    Module 2: Zero-Hallucination Prescription Handwriting Classifier (.joblib) + OpenFDA & PubMed RAG
     """
     try:
-        image_bytes = await file.read()
-        
-        # 1. Try Vision LLM Analysis if OpenAI Key is available (Highest Accuracy for Handwriting)
-        openai_api_key = os.environ.get("OPENAI_API_KEY")
-        extracted_meds_data = []
+        image_bytes = await file.read() if file else None
+        if not image_bytes and not manual_text.strip():
+            raise HTTPException(status_code=400, detail="Please upload a prescription image or enter prescription text.")
 
-        if openai_api_key:
-            import base64
-            base64_image = base64.b64encode(image_bytes).decode('utf-8')
-            headers = {
-                "Authorization": f"Bearer {openai_api_key}",
-                "Content-Type": "application/json"
-            }
-            payload = {
-                "model": "gpt-4o-mini",
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": "Analyze this prescription image. Extract all medications, dosages, and dosing frequencies accurately. Return a JSON object with a key 'medications' containing an array of objects with keys: 'name', 'dosage', 'frequency'."
-                            },
-                            {
-                                "type": "image_url",
-                                "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}
-                            }
-                        ]
-                    }
-                ],
-                "response_format": { "type": "json_object" }
-            }
-            try:
-                response = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload, timeout=12)
-                if response.status_code == 200:
-                    content = json.loads(response.json()["choices"][0]["message"]["content"])
-                    extracted_meds_data = content.get("medications", [])
-            except Exception:
-                pass
-
-        # 2. Fallback to Tesseract OCR + Smart Token Extraction if Vision LLM isn't configured
-        if not extracted_meds_data:
-            image = Image.open(io.BytesIO(image_bytes))
-            raw_text = pytesseract.image_to_string(image).strip()
-            
-            # Intelligent token parsing from OCR text
-            clean_words = re.sub(r'[^a-zA-Z\s]', ' ', raw_text)
-            tokens = [w.strip() for w in clean_words.split() if len(w) > 3 and w.lower() not in [
-                'patient', 'hospital', 'diagnosis', 'findings', 'clinic', 'tablet', 'capsule', 'morning', 'night', 'daily', 'dosage'
-            ]]
-            unique_drugs = list(dict.fromkeys(tokens))[:2]
-            if not unique_drugs:
-                unique_drugs = ["Amoxicillin"]
-            
-            for d in unique_drugs:
-                extracted_meds_data.append({
-                    "name": d.capitalize(),
-                    "dosage": "As Prescribed",
-                    "frequency": "Daily Regimen"
-                })
-
-        # 3. Enrich each detected medication with live OpenFDA RAG Data
-        verified_medications = []
-        total_hydration_adjustment = 0
-
-        async with httpx.AsyncClient() as client:
-            for med in extracted_meds_data:
-                drug_name = med.get("name", "Medication")
-                dosage = med.get("dosage", "Standard Regimen")
-                frequency = med.get("frequency", "As Directed")
-
-                url = f"https://api.fda.gov/drug/label.json?search=openfda.brand_name:{drug_name}+OR+openfda.generic_name:{drug_name}&limit=1"
-                try:
-                    res = await client.get(url, timeout=4.0)
-                    if res.status_code == 200:
-                        data = res.json()
-                        results = data.get("results", [])
-                        if results:
-                            r = results[0]
-                            purpose = r.get("purpose", ["Targeted therapeutic treatment and symptom modulation."])[0][:150] + "..."
-                            warnings = r.get("warnings", ["Maintain adequate daily fluid intake to support renal filtration."])[0][:150] + "..."
-                            pharm_class = r.get("pharm_class", ["Verified Formulary Agent"])[0][:50]
-                        else:
-                            raise Exception("No FDA record")
-                    else:
-                        raise Exception("API error")
-                except Exception:
-                    purpose = f"Evidence-based pharmacological compound indicated for targeted therapeutic management."
-                    warnings = "Maintain optimal hydration buffers to support glomerular filtration and renal clearance."
-                    pharm_class = "Formulary Therapeutic Agent"
-
-                verified_medications.append({
-                    "medicationName": drug_name,
-                    "dosage": dosage,
-                    "drugClass": pharm_class,
-                    "howItHelps": purpose,
-                    "visualSymbolCue": f"🔵 RAG Verified: {drug_name.upper()} ({dosage}) — Take {frequency}",
-                    "scheduleTiming": frequency,
-                    "renalHydrationImpact": warnings
-                })
-                total_hydration_adjustment += 300
-
-        smart_alarms = [
-            {"time": "08:00 AM", "action": f"Morning Dose: Take prescribed regimen with breakfast & water"},
-            {"time": "08:00 PM", "action": f"Evening Dose: Take evening schedule with dinner"}
-        ]
-
-        base_hydration = 2400 + total_hydration_adjustment
-
-        return {
-            "success": True,
-            "rawOcrExtractedText": "Successfully processed via Multimodal Vision & OpenFDA RAG Pipeline.",
-            "verifiedMedications": verified_medications,
-            "smartAlarmSchedule": smart_alarms,
-            "hydrationSafetyBuffer": {
-                "adjustedDailyGoalMl": base_hydration,
-                "clinicalRationale": f"Hydration target optimized to {base_hydration}ml based on live OpenFDA RAG analysis of {len(verified_medications)} active compounds to ensure safe renal filtration."
-            }
-        }
-
+        result = await analyze_prescription_slip(
+            image_bytes=image_bytes,
+            manual_text=manual_text,
+        )
+        return result
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Prescription RAG Pipeline Failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Prescription RAG Pipeline Error: {str(e)}")
 
 
+@app.post("/api/prescription-feedback")
+async def prescription_feedback(payload: dict = Body(...)):
+    """
+    Active Learning Endpoint: Saves user-verified handwriting corrections to SQLite
+    and retrains models/prescription_handwriting_model.joblib immediately.
+    """
+    ocr_pattern = payload.get("ocrPattern", "").strip()
+    corrected_drug = payload.get("correctedDrug", "").strip()
+
+    if not ocr_pattern or not corrected_drug:
+        raise HTTPException(status_code=400, detail="Both ocrPattern and correctedDrug are required.")
+
+    learned = register_handwriting_correction(ocr_pattern, corrected_drug)
+    return {
+        "success": True,
+        "message": f"Learned handwriting pattern '{learned['learnedPattern']}' → '{learned['mappedDrug']}' and retrained model.",
+        "learned": learned,
+    }
+
 # =====================================================================
-# MODULE 3: Clinical Hydration & Renal Safety Calculator Endpoint
+# MODULE 3: Clinical Hydration & Renal Safety Calculator
 # =====================================================================
-# =====================================================================
-# MODULE 3: Scientifically Rigorous Hydration & Renal Safety Endpoint
-# =====================================================================
+from hydration_engine import (
+    compute_clinical_hydration_plan,
+    get_today_hydration_status,
+    log_fluid_intake,
+    undo_last_fluid_log,
+    reset_today_fluid_logs,
+)
+
+
 @app.post("/api/calculate-hydration")
 async def calculate_hydration(payload: dict = Body(...)):
     """
-    Computes precise daily water intake targets adhering to IOM guidelines
-    and KDIGO renal safety parameters, adjusted for weight, activity, and climate.
+    Module 3: Evidence-Based Hydration & Renal Safety Engine
+    Syncs with Module 2 verified prescriptions in SQLite, live Open-Meteo weather, and PubMed.
     """
     try:
-        weight = float(payload.get("weightKg", 70))
-        activity_multiplier = float(payload.get("activityLevel", 1.2))
-        
-        # 1. Evidence-Based Baseline (38ml per kg per IOM clinical reference standards)
-        base_ml = weight * 38
-        
-        # 2. Environmental Climate Factor (Bengaluru tropical baseline: +15% adjustment for ambient evaporation)
-        climate_factor = 1.15
-        base_ml *= climate_factor
-        
-        # 3. Activity Multiplier
-        base_ml *= activity_multiplier
-        
-        final_target_ml = round(base_ml)
-        target_liters = round(final_target_ml / 1000, 2)
-
-        return {
-            "success": True,
-            "dailyGoalMl": final_target_ml,
-            "targetLiters": target_liters,
-            "liveClimate": "Tropical Baseline (27°C / Elevated Evaporative Demand)",
-            "renalSafetyNote": f"Calculated using IOM dietary reference standards (38ml/kg) with tropical climate and activity scaling for {weight}kg body weight to ensure proper glomerular perfusion and prevent drug-induced nephrotoxicity."
-        }
+        return await compute_clinical_hydration_plan(
+            weight_kg=float(payload.get("weightKg", 70)),
+            activity_level=str(payload.get("activityLevel", "moderate")),
+            has_fever=bool(payload.get("hasFever", False)),
+            has_gi_loss=bool(payload.get("hasGiLoss", False)),
+            custom_meds=payload.get("customMeds", []),
+            lat=float(payload.get("lat", 12.9716)),
+            lon=float(payload.get("lon", 77.5946)),
+        )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Hydration Calculation Error: {str(e)}")
 
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+@app.get("/api/hydration/status")
+async def hydration_status():
+    return {"success": True, **get_today_hydration_status()}
+
+
+@app.post("/api/hydration/log")
+async def hydration_log(payload: dict = Body(...)):
+    amount_ml = int(payload.get("amountMl", 250))
+    beverage_type = str(payload.get("beverageType", "Plain Water"))
+    return {"success": True, **log_fluid_intake(amount_ml, beverage_type)}
+
+
+@app.post("/api/hydration/undo")
+async def hydration_undo():
+    return {"success": True, **undo_last_fluid_log()}
+
+
+@app.post("/api/hydration/reset")
+async def hydration_reset():
+    return {"success": True, **reset_today_fluid_logs()}
+
+
+# =====================================================================
+# MODULE 4: 3D Kinematic Posture & Ergonomic Screener
+# =====================================================================
+from posture_engine import save_posture_record
+
+
+@app.post("/api/posture/analyze-kinematics")
+async def analyze_posture_kinematics(payload: dict = Body(...)):
+    """
+    Module 4: Saves 3D MediaPipe ergonomic screening metrics to SQLite and returns
+    matched Yoga Asana prescriptions for sedentary workers.
+    """
+    try:
+        return save_posture_record(payload)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Posture Kinematics Error: {str(e)}")
+
+# =====================================================================
+# MODULE 5: Stress Playground & Calming Hub
+# =====================================================================
+from stress_companion import generate_care_companion_response, get_random_wellness_joke
+
+
+@app.get("/api/stress-playground/joke")
+async def get_wellness_joke():
+    """Module 5: Returns lighthearted clinical and wellness humor."""
+    return get_random_wellness_joke()
+
+
+@app.post("/api/stress-playground/affirmation")
+async def get_soothing_affirmation(payload: dict = Body(...)):
+    """Module 5: Backward-compatible soothing affirmation endpoint."""
+    return generate_care_companion_response(payload)
+
+
+@app.post("/api/stress-playground/care-companion")
+async def care_companion_checkin(payload: dict = Body(...)):
+    """Module 5: Empathetic patient care companion & worry-release validation."""
+    return generate_care_companion_response(payload)

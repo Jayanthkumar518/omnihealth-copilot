@@ -1,0 +1,44 @@
+datasource db {
+  provider = "postgresql" // Or sqlite / mysql based on your setup
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model PostureSession {
+  id                   String   @id @default(uuid())
+  createdAt            DateTime @default(now())
+  rulaScore            Int
+  riskLevel            String
+  forwardHeadAngle     Float
+  shoulderAsymmetry    Float
+  lumbarFlexionAngle   Float
+  pelvicTilt           Float
+  hipFlexionAngle      Float
+  spineRisk            String
+  recommendation       String
+  mode                 String   // 'webcam', 'image_upload', or 'manual_capture'
+  imageSnapshot        String?  // Base64 encoded snapshot or file URL
+}
+
+model PatientSession {
+  id               String         @id @default(uuid())
+  createdAt        DateTime       @default(now())
+  transcript       String?
+  intensityScore   Int?
+  rulaScore        Int?
+  forwardHeadAngle Float?
+  lumbarFlexion    Float?
+  reportSummary    String?
+  HydrationLog     HydrationLog[]
+}
+
+model HydrationLog {
+  id        String         @id @default(uuid())
+  patientId String
+  patient   PatientSession @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  amountMl  Float
+  timestamp DateTime       @default(now())
+}
